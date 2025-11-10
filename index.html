@@ -1,0 +1,609 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Wallpaper Subreddit Browser</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      /* Custom font import for better aesthetic */
+      @import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap");
+      body {
+        font-family: "Inter", sans-serif;
+        background-color: #1a202c; /* Dark background */
+      }
+      /* Custom aspect ratio for image containers (e.g., 3:2) */
+      .aspect-ratio-3x2 {
+        padding-bottom: 66.66%; /* (2 / 3) * 100% */
+      }
+      /* Fade-in animation for status messages */
+      @keyframes fade-in {
+        from {
+          opacity: 0;
+          transform: translateY(10px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+      .animate-fade-in {
+        animation: fade-in 0.3s ease-out forwards;
+      }
+      .fade-out {
+        transition: opacity 1s ease-out;
+        opacity: 0;
+      }
+    </style>
+    <script>
+      // Data for the subreddits
+      const subreddits = [
+        { name: "wallpapers", description: "General high-quality wallpapers." },
+        {
+          name: "WQHD_Wallpaper",
+          description:
+            "Specifically for Quad HD (2560x1440) resolution and higher.",
+        },
+        {
+          name: "MinimalWallpaper",
+          description: "Clean, simple, and minimalist designs.",
+        },
+        {
+          name: "Art",
+          description: "Beautiful artworks, great for creative backgrounds.",
+        },
+        {
+          name: "Amoledbackgrounds",
+          description: "Optimized dark backgrounds for AMOLED screens.",
+        },
+        {
+          name: "EarthPorn",
+          description: "Stunning nature and landscape photography.",
+        },
+        {
+          name: "CityPorn",
+          description: "Impressive cityscapes and architectural photography.",
+        },
+        {
+          name: "ImaginaryLandscapes",
+          description: "Fantasy, sci-fi, and conceptual digital art.",
+        },
+        {
+          name: "SpacePorn",
+          description: "Astrophotography and cosmic imagery.",
+        },
+        {
+          name: "multiwall",
+          description: "Wallpapers designed for multiple monitors.",
+        },
+      ];
+
+      // Global State for filtering and pagination
+      let currentSubreddit = "";
+      let currentFilter = "hot"; // Default filter
+      let afterToken = null; // Token for pagination
+
+      // Helper function to safely clean URLs
+      const cleanUrl = (url) => (url ? url.replace(/&amp;/g, "&") : null);
+
+      // --- Wallpaper Setting Functions ---
+
+      /**
+       * Attempts to set the wallpaper via the Electron API.
+       * If running in a browser, it shows a message instead.
+       */
+      const setWallpaper = (url, title) => {
+        const statusToast = document.getElementById("status-toast");
+
+        if (window.electronAPI) {
+          // If running inside Electron, call the exposed API
+          statusToast.textContent = `Setting wallpaper... Please wait.`;
+          statusToast.className =
+            "fixed bottom-5 right-5 z-50 p-4 rounded-xl bg-yellow-500 text-gray-900 shadow-xl animate-fade-in";
+          statusToast.classList.remove("hidden");
+
+          window.electronAPI.setWallpaper(url, title);
+        } else {
+          // If running in a standard browser
+          showModal(url, title);
+        }
+      };
+
+      /**
+       * Initializes listeners for status updates from the Electron main process.
+       */
+      const setupElectronListeners = () => {
+        if (window.electronAPI) {
+          const statusToast = document.getElementById("status-toast");
+
+          window.electronAPI.onWallpaperStatus((type, message) => {
+            if (type === "success") {
+              statusToast.textContent = message;
+              statusToast.className =
+                "fixed bottom-5 right-5 z-50 p-4 rounded-xl bg-green-500 text-white shadow-xl animate-fade-in";
+            } else {
+              statusToast.textContent = message;
+              statusToast.className =
+                "fixed bottom-5 right-5 z-50 p-4 rounded-xl bg-red-600 text-white shadow-xl animate-fade-in";
+            }
+            // Hide after 4 seconds
+            setTimeout(() => {
+              statusToast.classList.add("fade-out");
+              setTimeout(() => statusToast.classList.add("hidden"), 1000);
+            }, 4000);
+          });
+        }
+      };
+
+      // --- Core Application Functions (Fetch/Render) ---
+
+      const fetchWallpapers = async (
+        subredditName,
+        filter = currentFilter,
+        after = afterToken,
+        append = false
+      ) => {
+        const subredditContainer = document.getElementById(
+          "subreddit-container"
+        );
+        const imageContainer = document.getElementById(
+          "image-results-container"
+        );
+        const statusMessage = document.getElementById("status-message");
+        const loadMoreContainer = document.getElementById(
+          "load-more-container"
+        );
+        const filterControls = document.getElementById("filter-controls");
+
+        // 1. Determine State and Set Loading Status
+        let isNewQuery =
+          subredditName &&
+          (subredditName !== currentSubreddit || filter !== currentFilter);
+
+        if (isNewQuery) {
+          currentSubreddit = subredditName;
+          currentFilter = filter;
+          afterToken = null;
+          imageContainer.innerHTML = "";
+        }
+
+        subredditContainer.classList.add("hidden");
+        if (!append) {
+          imageContainer.classList.add("hidden");
+        }
+        loadMoreContainer.classList.add("hidden");
+        filterControls.classList.add("hidden");
+
+        statusMessage.textContent = append
+          ? "Loading more posts..."
+          : `Loading posts from r/${currentSubreddit} (${currentFilter.toUpperCase()})...`;
+        statusMessage.classList.remove("hidden");
+
+        document.getElementById(
+          "header-title"
+        ).textContent = `Wallpapers from r/${currentSubreddit}`;
+        document.getElementById(
+          "header-subtitle"
+        ).textContent = `Click "Set As Wallpaper" for desktop integration.`;
+
+        // Highlight the active filter button
+        document.querySelectorAll(".filter-button").forEach((btn) => {
+          btn.classList.remove(
+            "bg-indigo-600",
+            "text-white",
+            "hover:bg-indigo-700"
+          );
+          btn.classList.add(
+            "bg-gray-700",
+            "text-gray-300",
+            "hover:bg-gray-600"
+          );
+        });
+        document
+          .getElementById(`filter-${currentFilter}`)
+          .classList.remove(
+            "bg-gray-700",
+            "text-gray-300",
+            "hover:bg-gray-600"
+          );
+        document
+          .getElementById(`filter-${currentFilter}`)
+          .classList.add("bg-indigo-600", "text-white", "hover:bg-indigo-700");
+
+        // 2. API Call Setup (25 posts per page)
+        let apiUrl = `https://www.reddit.com/r/${currentSubreddit}/${currentFilter}.json?limit=25`;
+
+        if (append && afterToken) {
+          apiUrl += `&after=${afterToken}`;
+        }
+
+        try {
+          const response = await fetch(apiUrl);
+          if (!response.ok) {
+            throw new Error(`HTTP error! Status: ${response.status}`);
+          }
+          const data = await response.json();
+
+          afterToken = data.data.after;
+
+          let imageUrls = [];
+          data.data.children.forEach((child) => {
+            const post = child.data;
+
+            if (post.stickied || post.hidden || post.removed_by_category)
+              return;
+
+            const permalink = `https://www.reddit.com${post.permalink}`;
+
+            // 1. Handle Single Image Posts
+            const isSingleImage =
+              post.url &&
+              (post.url.match(/\.(jpeg|jpg|gif|png)$/i) ||
+                (post.post_hint === "image" && !post.is_gallery));
+
+            if (isSingleImage) {
+              const previewUrl =
+                post.preview?.images?.[0]?.source?.url || post.url;
+              const downloadUrl = post.url;
+
+              if (downloadUrl) {
+                imageUrls.push({
+                  previewUrl: cleanUrl(previewUrl),
+                  downloadUrl: cleanUrl(downloadUrl),
+                  title: post.title,
+                  permalink: permalink,
+                });
+              }
+              return;
+            }
+
+            // 2. Handle Gallery Posts
+            if (post.is_gallery && post.media_metadata) {
+              const mediaMetadata = post.media_metadata;
+
+              for (const mediaId in mediaMetadata) {
+                const mediaItem = mediaMetadata[mediaId];
+
+                if (
+                  mediaItem.e === "Image" ||
+                  mediaItem.m?.startsWith("image/")
+                ) {
+                  let previewUrl = null;
+                  let downloadUrl = null;
+
+                  if (mediaItem.p && mediaItem.p.length > 0) {
+                    previewUrl = mediaItem.p[mediaItem.p.length - 1].u;
+                  }
+
+                  if (mediaItem.s && mediaItem.s.u) {
+                    downloadUrl = mediaItem.s.u;
+                  }
+
+                  if (downloadUrl) {
+                    imageUrls.push({
+                      previewUrl: cleanUrl(previewUrl || downloadUrl),
+                      downloadUrl: cleanUrl(downloadUrl),
+                      title: `${post.title} (Gallery Item)`,
+                      permalink: permalink,
+                    });
+                  }
+                }
+              }
+            }
+          });
+
+          // 3. Render Results
+          statusMessage.classList.add("hidden");
+          filterControls.classList.remove("hidden");
+          imageContainer.classList.remove("hidden");
+
+          if (imageUrls.length === 0 && !append) {
+            imageContainer.innerHTML = `
+                        <div class="col-span-full text-center p-8 bg-gray-800 rounded-xl shadow-lg">
+                            <p class="text-xl text-yellow-400 font-semibold">No suitable image posts found in r/${currentSubreddit}.</p>
+                            <p class="text-gray-400 mt-2">Try a different subreddit or filter.</p>
+                            <button onclick="showSubredditPicker()" class="mt-6 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-6 rounded-lg transition duration-150 transform hover:scale-[1.05]">
+                                ← Back to List
+                            </button>
+                        </div>
+                    `;
+            return;
+          }
+
+          // Generate image grid HTML
+          const imagesHtml = imageUrls
+            .map(
+              (image) => `
+                    <div class="group relative overflow-hidden rounded-xl shadow-lg bg-gray-900 border border-gray-700">
+                        <!-- Image Container: Uses preview URL for display -->
+                        <div class="w-full aspect-ratio-3x2 relative">
+                            <img 
+                                src="${image.previewUrl}" 
+                                alt="${image.title}" 
+                                class="absolute inset-0 w-full h-full object-cover transition duration-500 group-hover:scale-105"
+                                onerror="this.onerror=null; this.src='https://placehold.co/600x400/374151/d1d5db?text=Image+Load+Error';"
+                            />
+                        </div>
+                        
+                        <!-- Overlay with actions -->
+                        <div class="absolute inset-0 bg-black bg-opacity-70 flex flex-col items-center justify-center opacity-0 group-hover:opacity-100 transition duration-300 p-4 space-y-3 backdrop-blur-sm">
+                            <span class="text-white text-center text-md font-bold mb-2">
+                                ${image.title.substring(0, 40)}${
+                image.title.length > 40 ? "..." : ""
+              }
+                            </span>
+                            
+                            <!-- Set as Wallpaper Button -->
+                            <button onclick="setWallpaper('${image.downloadUrl.replace(
+                              /'/g,
+                              "\\'"
+                            )}', '${image.title.replace(/'/g, "\\'")}')" 
+                               class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-full text-sm shadow-xl transition duration-150 transform hover:scale-105">
+                                Set As Wallpaper
+                            </button>
+                            
+                            <!-- Download Button -->
+                            <a href="${
+                              image.downloadUrl
+                            }" download="${image.title
+                .replace(/[^\w\s-]/g, "")
+                .substring(0, 30)}.jpg" 
+                               class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-full text-sm shadow-xl transition duration-150 transform hover:scale-105"
+                               target="_blank" rel="noopener noreferrer">
+                                Download Original
+                            </a>
+
+                            <!-- View Post Link -->
+                            <a href="${
+                              image.permalink
+                            }" target="_blank" rel="noopener noreferrer" 
+                               class="text-gray-300 hover:text-indigo-400 text-xs font-medium transition duration-150 underline">
+                                View Reddit Post
+                            </a>
+                        </div>
+                    </div>
+                `
+            )
+            .join("");
+
+          if (append) {
+            imageContainer.insertAdjacentHTML("beforeend", imagesHtml);
+          } else {
+            imageContainer.innerHTML = imagesHtml;
+          }
+
+          if (afterToken) {
+            loadMoreContainer.classList.remove("hidden");
+          } else {
+            loadMoreContainer.classList.add("hidden");
+          }
+        } catch (error) {
+          console.error("API Fetch Error:", error);
+          statusMessage.textContent = `Error: Could not connect to the Reddit API or process the request. Try again later.`;
+          statusMessage.classList.remove("hidden");
+          statusMessage.classList.add("text-red-400");
+
+          statusMessage.innerHTML += `
+                    <div class="col-span-full text-center mt-4">
+                        <button onclick="showSubredditPicker()" class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-lg transition duration-150">
+                            Back to List
+                        </button>
+                    </div>
+                `;
+        }
+      };
+
+      const loadMore = () => {
+        fetchWallpapers(currentSubreddit, currentFilter, afterToken, true);
+      };
+
+      const changeFilter = (newFilter) => {
+        if (newFilter !== currentFilter) {
+          fetchWallpapers(currentSubreddit, newFilter, null, false);
+        }
+      };
+
+      const renderSubreddits = () => {
+        const container = document.getElementById("subreddit-container");
+        container.innerHTML = subreddits
+          .map(
+            (sub) => `
+                <div 
+                    onclick="fetchWallpapers('${sub.name}', 'hot', null, false)" 
+                    class="bg-gray-800 p-6 rounded-xl shadow-lg hover:shadow-2xl transition duration-300 ease-in-out transform hover:scale-[1.02] cursor-pointer border-2 border-transparent hover:border-indigo-500 flex flex-col justify-between"
+                >
+                    <div>
+                        <h2 class="text-2xl font-extrabold text-indigo-400 mb-2">r/${sub.name}</h2>
+                        <p class="text-gray-300 text-sm">${sub.description}</p>
+                    </div>
+                    <span class="mt-4 text-xs font-semibold text-indigo-300 bg-gray-700/50 px-3 py-1 rounded-full w-fit">
+                        Click to Browse Posts
+                    </span>
+                </div>
+            `
+          )
+          .join("");
+      };
+
+      const showSubredditPicker = () => {
+        const subredditContainer = document.getElementById(
+          "subreddit-container"
+        );
+        const imageContainer = document.getElementById(
+          "image-results-container"
+        );
+        const statusMessage = document.getElementById("status-message");
+
+        currentSubreddit = "";
+        currentFilter = "hot";
+        afterToken = null;
+
+        document.getElementById("header-title").textContent =
+          "Wallpaper Subreddit Finder";
+        document.getElementById("header-subtitle").textContent =
+          "Find your next favorite wallpaper! Click any card to browse its latest posts.";
+
+        subredditContainer.classList.remove("hidden");
+        imageContainer.classList.add("hidden");
+        statusMessage.classList.add("hidden");
+        document.getElementById("filter-controls").classList.add("hidden");
+        document.getElementById("load-more-container").classList.add("hidden");
+        statusMessage.classList.remove("text-red-400");
+      };
+
+      // Modal for Browser Warning (used if not in Electron)
+      const showModal = (downloadUrl, title) => {
+        document.getElementById(
+          "modal-title"
+        ).textContent = `Download Required`;
+        document.getElementById("modal-message").innerHTML = `
+                The feature to set the wallpaper automatically is only available when running the application as a standalone **Electron Desktop App**. 
+                <br><br>
+                Please download the original image, then set it manually through your operating system's settings.
+            `;
+        document.getElementById("modal-action").innerHTML = `
+                <a href="${downloadUrl}" download="${title
+          .replace(/[^\w\s-]/g, "")
+          .substring(0, 30)}.jpg" 
+                   class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-full text-sm shadow-xl transition duration-150 transform hover:scale-105">
+                   Download "${title.substring(0, 20)}..."
+                </a>
+            `;
+        document.getElementById("modal-backdrop").classList.remove("hidden");
+      };
+
+      const closeModal = () => {
+        document.getElementById("modal-backdrop").classList.add("hidden");
+      };
+
+      // Initialize rendering on window load
+      window.onload = () => {
+        renderSubreddits();
+        showSubredditPicker();
+        setupElectronListeners(); // Check if we are running in Electron and set up listeners
+      };
+    </script>
+  </head>
+  <body class="min-h-screen text-white p-4 sm:p-8">
+    <!-- Header Section -->
+    <header class="text-center mb-10 mt-4">
+      <h1
+        id="header-title"
+        class="text-4xl sm:text-5xl font-extrabold tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-purple-500 transition-all duration-300"
+      >
+        Wallpaper Subreddit Finder
+      </h1>
+      <p
+        id="header-subtitle"
+        class="mt-3 text-lg text-gray-400 max-w-2xl mx-auto transition-all duration-300"
+      >
+        Find your next favorite wallpaper! Click any card to browse its latest
+        posts.
+      </p>
+    </header>
+
+    <!-- Main Content Area -->
+    <main class="max-w-7xl mx-auto">
+      <!-- 1. Filter Controls (Hidden by Default) -->
+      <div
+        id="filter-controls"
+        class="hidden flex justify-between items-center mb-6 p-4 bg-gray-800 rounded-xl shadow-lg"
+      >
+        <button
+          onclick="showSubredditPicker()"
+          class="bg-gray-700 hover:bg-gray-600 text-sm text-white font-semibold py-2 px-4 rounded-lg transition duration-150"
+        >
+          ← Back to List
+        </button>
+        <div class="flex space-x-2">
+          <button
+            id="filter-hot"
+            onclick="changeFilter('hot')"
+            class="filter-button bg-indigo-600 text-white font-semibold py-2 px-4 rounded-lg transition duration-150"
+          >
+            Hot
+          </button>
+          <button
+            id="filter-new"
+            onclick="changeFilter('new')"
+            class="filter-button bg-gray-700 text-gray-300 font-semibold py-2 px-4 rounded-lg transition duration-150"
+          >
+            New
+          </button>
+          <button
+            id="filter-top"
+            onclick="changeFilter('top')"
+            class="filter-button bg-gray-700 text-gray-300 font-semibold py-2 px-4 rounded-lg transition duration-150"
+          >
+            Top
+          </button>
+        </div>
+      </div>
+
+      <!-- 2. Subreddit Picker Grid (Default View) -->
+      <div
+        id="subreddit-container"
+        class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6"
+      >
+        <!-- Subreddit cards injected here -->
+      </div>
+
+      <!-- 3. Status/Loading Message (Hidden by Default) -->
+      <div
+        id="status-message"
+        class="hidden text-center p-8 text-xl font-semibold text-indigo-300"
+      >
+        <!-- Loading message or error message -->
+      </div>
+
+      <!-- 4. Image Results Grid (Hidden by Default) -->
+      <div
+        id="image-results-container"
+        class="hidden grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6"
+      >
+        <!-- Wallpapers will be injected here -->
+      </div>
+
+      <!-- 5. Load More Button (Hidden by Default) -->
+      <div id="load-more-container" class="hidden text-center my-8">
+        <button
+          onclick="loadMore()"
+          class="bg-purple-600 hover:bg-purple-700 text-white font-bold py-3 px-8 rounded-full shadow-lg transition duration-150 transform hover:scale-[1.05]"
+        >
+          Load More Wallpapers
+        </button>
+      </div>
+    </main>
+
+    <!-- Status Toast (For Electron communication) -->
+    <div id="status-toast" class="hidden"></div>
+
+    <!-- Modal for Browser Warning -->
+    <div
+      id="modal-backdrop"
+      class="hidden fixed inset-0 bg-black bg-opacity-75 z-50 flex items-center justify-center transition-opacity"
+      onclick="closeModal()"
+    >
+      <div
+        class="bg-gray-800 rounded-xl p-8 max-w-lg mx-4 shadow-2xl transform scale-100 transition-transform"
+        onclick="event.stopPropagation()"
+      >
+        <h2
+          id="modal-title"
+          class="text-2xl font-bold text-indigo-400 mb-4"
+        ></h2>
+        <p id="modal-message" class="text-gray-300 mb-6"></p>
+        <div id="modal-action" class="flex justify-between items-center">
+          <button
+            onclick="closeModal()"
+            class="text-gray-400 hover:text-white transition duration-150"
+          >
+            Close
+          </button>
+          <!-- Download link injected here -->
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

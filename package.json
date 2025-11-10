@@ -1,0 +1,22 @@
+{
+    "name": "reddit-wallpaper-crawler",
+    "version": "1.0.0",
+    "description": "A desktop app to browse Reddit wallpapers and set them as the desktop background.",
+    "main": "main.js",
+    "scripts": {
+        "start": "electron ."
+    },
+    "keywords": [
+        "electron",
+        "wallpaper",
+        "reddit"
+    ],
+    "author": "",
+    "license": "ISC",
+    "dependencies": {
+        "wallpaper": "^5.0.0"
+    },
+    "devDependencies": {
+        "electron": "^28.2.1"
+    }
+}
